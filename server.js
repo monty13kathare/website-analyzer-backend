@@ -9,7 +9,7 @@ import crypto from "crypto";
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -32,22 +32,13 @@ function isValidUrl(value) {
   }
 }
 
-
-
 function rgbToHex(rgb) {
   const match = rgb.match(/\d+/g);
   if (!match) return null;
 
   const [r, g, b] = match.map(Number);
-  return (
-    "#" +
-    [r, g, b]
-      .map((x) => x.toString(16).padStart(2, "0"))
-      .join("")
-  );
+  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
-
-
 
 /* ---------------- PAGE HARDENING ---------------- */
 
@@ -120,7 +111,6 @@ async function extractCSSColors(page) {
   }
 }
 
-
 async function extractFonts(page) {
   try {
     return await page.evaluate(() => {
@@ -130,9 +120,9 @@ async function extractFonts(page) {
       for (const el of els) {
         const family = getComputedStyle(el).fontFamily;
         if (family) {
-          family.split(",").forEach((f) =>
-            fonts.add(f.replace(/["']/g, "").trim())
-          );
+          family
+            .split(",")
+            .forEach((f) => fonts.add(f.replace(/["']/g, "").trim()));
         }
       }
       return Array.from(fonts).slice(0, 10);
@@ -162,7 +152,7 @@ async function extractTags(page) {
       document
         .querySelectorAll("meta[name='keywords']")
         .forEach((m) =>
-          m.content?.split(",").forEach((t) => tags.add(t.trim()))
+          m.content?.split(",").forEach((t) => tags.add(t.trim())),
         );
 
       document.querySelectorAll("h1,h2").forEach((h) => {
@@ -186,79 +176,120 @@ async function extractCategory(page) {
       ).toLowerCase();
 
       const rules = [
-        ["E-commerce", [
-          "shop", "store", "cart", "checkout",
-          "buy", "order", "product", "sale"
-        ]],
+        [
+          "E-commerce",
+          [
+            "shop",
+            "store",
+            "cart",
+            "checkout",
+            "buy",
+            "order",
+            "product",
+            "sale",
+          ],
+        ],
 
-        ["Marketplace", [
-          "marketplace", "vendors", "sellers", "listings"
-        ]],
+        ["Marketplace", ["marketplace", "vendors", "sellers", "listings"]],
 
-        ["Technology / SaaS", [
-          "software", "saas", "platform", "cloud",
-          "api", "dashboard", "integration"
-        ]],
+        [
+          "Technology / SaaS",
+          [
+            "software",
+            "saas",
+            "platform",
+            "cloud",
+            "api",
+            "dashboard",
+            "integration",
+          ],
+        ],
 
-        ["AI / Data / ML", [
-          "artificial intelligence", "machine learning",
-          "ai", "llm", "chatbot", "analytics"
-        ]],
+        [
+          "AI / Data / ML",
+          [
+            "artificial intelligence",
+            "machine learning",
+            "ai",
+            "llm",
+            "chatbot",
+            "analytics",
+          ],
+        ],
 
-        ["Education", [
-          "education", "course", "learn", "training",
-          "tutorial", "academy", "certification"
-        ]],
+        [
+          "Education",
+          [
+            "education",
+            "course",
+            "learn",
+            "training",
+            "tutorial",
+            "academy",
+            "certification",
+          ],
+        ],
 
-        ["Finance", [
-          "bank", "banking", "investment",
-          "loan", "insurance", "finance"
-        ]],
+        [
+          "Finance",
+          ["bank", "banking", "investment", "loan", "insurance", "finance"],
+        ],
 
-        ["Healthcare", [
-          "health", "medical", "clinic",
-          "hospital", "doctor", "patient"
-        ]],
+        [
+          "Healthcare",
+          ["health", "medical", "clinic", "hospital", "doctor", "patient"],
+        ],
 
-        ["News / Media", [
-          "news", "media", "journal",
-          "headline", "breaking news"
-        ]],
+        [
+          "News / Media",
+          ["news", "media", "journal", "headline", "breaking news"],
+        ],
 
-        ["Blog / Content", [
-          "blog", "article", "post",
-          "read more", "author", "comments"
-        ]],
+        [
+          "Blog / Content",
+          ["blog", "article", "post", "read more", "author", "comments"],
+        ],
 
-        ["Portfolio / Personal", [
-          "portfolio", "my work", "projects",
-          "case study", "developer", "designer"
-        ]],
+        [
+          "Portfolio / Personal",
+          [
+            "portfolio",
+            "my work",
+            "projects",
+            "case study",
+            "developer",
+            "designer",
+          ],
+        ],
 
-        ["Corporate Website", [
-          "about us", "our company", "leadership",
-          "investors", "careers", "mission"
-        ]],
+        [
+          "Corporate Website",
+          [
+            "about us",
+            "our company",
+            "leadership",
+            "investors",
+            "careers",
+            "mission",
+          ],
+        ],
 
-        ["Real Estate", [
-          "real estate", "property",
-          "rent", "buy home"
-        ]],
+        ["Real Estate", ["real estate", "property", "rent", "buy home"]],
 
-        ["Travel / Hospitality", [
-          "travel", "hotel", "booking",
-          "reservation", "vacation"
-        ]],
+        [
+          "Travel / Hospitality",
+          ["travel", "hotel", "booking", "reservation", "vacation"],
+        ],
 
-        ["Government / Public Service", [
-          "government", "ministry",
-          "public service", "policy"
-        ]],
+        [
+          "Government / Public Service",
+          ["government", "ministry", "public service", "policy"],
+        ],
 
-        ["Non-Profit / NGO", [
-          "ngo", "charity", "donation",
-          "volunteer", "foundation"
-        ]]
+        [
+          "Non-Profit / NGO",
+          ["ngo", "charity", "donation", "volunteer", "foundation"],
+        ],
       ];
 
       let bestCategory = "General Website";
@@ -282,7 +313,6 @@ async function extractCategory(page) {
     return "Unknown";
   }
 }
-
 
 /* ---------------- API ---------------- */
 
@@ -338,10 +368,7 @@ app.post("/analyze", async (req, res) => {
 
     const rawColors = await extractCSSColors(desktop);
 
-const colors = rawColors
-  .map(rgbToHex)
-  .filter(Boolean)
-  .slice(0, 30);
+    const colors = rawColors.map(rgbToHex).filter(Boolean).slice(0, 30);
 
     // const colors = await extractCSSColors(desktop);
     const fonts = await extractFonts(desktop);
@@ -394,8 +421,7 @@ const colors = rawColors
   } catch (err) {
     res.status(500).json({
       status: "error",
-      message:
-        "The website restricted automation or took too long to respond.",
+      message: "The website restricted automation or took too long to respond.",
     });
   } finally {
     if (browser) await browser.close();
