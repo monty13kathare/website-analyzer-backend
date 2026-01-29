@@ -1,7 +1,7 @@
 import express from "express";
+import cors from "cors";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import cors from "cors";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -9,11 +9,11 @@ import crypto from "crypto";
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-
 app.use(cors());
 app.use(express.json());
 app.use(express.static("screenshots"));
+
+const PORT = process.env.PORT || 5000;
 
 /* ---------------- HELPERS ---------------- */
 
@@ -32,404 +32,160 @@ function isValidUrl(value) {
   }
 }
 
-function rgbToHex(rgb) {
-  const match = rgb.match(/\d+/g);
-  if (!match) return null;
-
-  const [r, g, b] = match.map(Number);
-  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
-
-/* ---------------- PAGE HARDENING ---------------- */
-
-async function hardenPage(page) {
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
-    Object.defineProperty(navigator, "languages", {
-      get: () => ["en-US", "en"],
-    });
-    Object.defineProperty(navigator, "plugins", {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    window.chrome = { runtime: {} };
-  });
-}
-
-/* ---------------- RENDERING ---------------- */
-
-async function stabilizePage(page) {
-  try {
-    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 20000 });
-  } catch {}
-  await sleep(4000);
-}
-
-async function aggressiveScroll(page) {
-  try {
-    await page.evaluate(async () => {
-      for (let i = 0; i < 12; i++) {
-        window.scrollBy(0, window.innerHeight);
-        await new Promise((r) => setTimeout(r, 600));
-      }
-      window.scrollTo(0, 0);
-    });
-  } catch {}
-}
-
-async function forceLoadImages(page) {
-  try {
-    await page.evaluate(() => {
-      document.querySelectorAll("img").forEach((img) => {
-        img.loading = "eager";
-        if (img.dataset?.src) img.src = img.dataset.src;
-        if (img.dataset?.lazy) img.src = img.dataset.lazy;
-      });
-    });
-  } catch {}
-}
-
-/* ---------------- EXTRACTION (SAFE) ---------------- */
-
-async function extractCSSColors(page) {
-  try {
-    return await page.evaluate(() => {
-      const colors = new Set();
-      const els = Array.from(document.querySelectorAll("*")).slice(0, 1200);
-
-      for (const el of els) {
-        const s = getComputedStyle(el);
-        [s.color, s.backgroundColor].forEach((c) => {
-          if (c && c !== "rgba(0, 0, 0, 0)" && c.startsWith("rgb")) {
-            colors.add(c);
-          }
-        });
-      }
-      return Array.from(colors);
-    });
-  } catch {
-    return [];
-  }
-}
-
-async function extractFonts(page) {
-  try {
-    return await page.evaluate(() => {
-      const fonts = new Set();
-      const els = Array.from(document.querySelectorAll("*")).slice(0, 1200);
-
-      for (const el of els) {
-        const family = getComputedStyle(el).fontFamily;
-        if (family) {
-          family
-            .split(",")
-            .forEach((f) => fonts.add(f.replace(/["']/g, "").trim()));
-        }
-      }
-      return Array.from(fonts).slice(0, 10);
-    });
-  } catch {
-    return [];
-  }
-}
-
-function classifyFontTypes(fonts) {
-  const types = new Set();
-  fonts.forEach((f) => {
-    const name = f.toLowerCase();
-    if (name.includes("mono")) types.add("monospace");
-    else if (name.includes("serif") && !name.includes("sans"))
-      types.add("serif");
-    else types.add("sans-serif");
-  });
-  return Array.from(types);
-}
-
-async function extractTags(page) {
-  try {
-    return await page.evaluate(() => {
-      const tags = new Set();
-
-      document
-        .querySelectorAll("meta[name='keywords']")
-        .forEach((m) =>
-          m.content?.split(",").forEach((t) => tags.add(t.trim())),
-        );
-
-      document.querySelectorAll("h1,h2").forEach((h) => {
-        if (h.innerText.length < 60) tags.add(h.innerText.toLowerCase());
-      });
-
-      return Array.from(tags).slice(0, 12);
-    });
-  } catch {
-    return [];
-  }
-}
+/* ---------------- CATEGORY (SCORING-BASED) ---------------- */
 
 async function extractCategory(page) {
-  try {
-    return await page.evaluate(() => {
-      const text = (
-        document.title +
-        " " +
-        document.body.innerText.slice(0, 3000)
-      ).toLowerCase();
+  return page.evaluate(() => {
+    const text = (
+      document.title +
+      " " +
+      document.body.innerText.slice(0, 3000)
+    ).toLowerCase();
 
-      const rules = [
-        [
-          "E-commerce",
-          [
-            "shop",
-            "store",
-            "cart",
-            "checkout",
-            "buy",
-            "order",
-            "product",
-            "sale",
-          ],
-        ],
+    const rules = [
+      [
+        "AI / Data / ML",
+        ["ai", "machine learning", "chatbot", "llm", "analytics"],
+      ],
+      ["Social Media", ["social", "community", "followers", "share"]],
+      ["E-commerce", ["shop", "store", "cart", "checkout", "buy"]],
+      ["Education", ["course", "learn", "academy", "training"]],
+      ["Finance", ["bank", "finance", "investment", "crypto"]],
+      ["Healthcare", ["health", "medical", "clinic"]],
+      ["SaaS / Technology", ["software", "platform", "api", "dashboard"]],
+      ["News / Media", ["news", "media", "headline"]],
+      ["Portfolio", ["portfolio", "projects", "case study"]],
+    ];
 
-        ["Marketplace", ["marketplace", "vendors", "sellers", "listings"]],
+    let best = "General Website";
+    let score = 0;
 
-        [
-          "Technology / SaaS",
-          [
-            "software",
-            "saas",
-            "platform",
-            "cloud",
-            "api",
-            "dashboard",
-            "integration",
-          ],
-        ],
-
-        [
-          "AI / Data / ML",
-          [
-            "artificial intelligence",
-            "machine learning",
-            "ai",
-            "llm",
-            "chatbot",
-            "analytics",
-          ],
-        ],
-
-        [
-          "Education",
-          [
-            "education",
-            "course",
-            "learn",
-            "training",
-            "tutorial",
-            "academy",
-            "certification",
-          ],
-        ],
-
-        [
-          "Finance",
-          ["bank", "banking", "investment", "loan", "insurance", "finance"],
-        ],
-
-        [
-          "Healthcare",
-          ["health", "medical", "clinic", "hospital", "doctor", "patient"],
-        ],
-
-        [
-          "News / Media",
-          ["news", "media", "journal", "headline", "breaking news"],
-        ],
-
-        [
-          "Blog / Content",
-          ["blog", "article", "post", "read more", "author", "comments"],
-        ],
-
-        [
-          "Portfolio / Personal",
-          [
-            "portfolio",
-            "my work",
-            "projects",
-            "case study",
-            "developer",
-            "designer",
-          ],
-        ],
-
-        [
-          "Corporate Website",
-          [
-            "about us",
-            "our company",
-            "leadership",
-            "investors",
-            "careers",
-            "mission",
-          ],
-        ],
-
-        ["Real Estate", ["real estate", "property", "rent", "buy home"]],
-
-        [
-          "Travel / Hospitality",
-          ["travel", "hotel", "booking", "reservation", "vacation"],
-        ],
-
-        [
-          "Government / Public Service",
-          ["government", "ministry", "public service", "policy"],
-        ],
-
-        [
-          "Non-Profit / NGO",
-          ["ngo", "charity", "donation", "volunteer", "foundation"],
-        ],
-      ];
-
-      let bestCategory = "General Website";
-      let highestScore = 0;
-
-      for (const [label, keywords] of rules) {
-        let score = 0;
-        for (const k of keywords) {
-          if (text.includes(k)) score++;
-        }
-
-        if (score > highestScore) {
-          highestScore = score;
-          bestCategory = label;
-        }
+    for (const [label, keywords] of rules) {
+      let hits = keywords.filter((k) => text.includes(k)).length;
+      if (hits > score) {
+        score = hits;
+        best = label;
       }
+    }
 
-      return bestCategory;
-    });
-  } catch {
-    return "Unknown";
-  }
+    return best;
+  });
 }
 
-/* ---------------- API ---------------- */
+/* ---------------- ANALYZE ---------------- */
 
 app.post("/analyze", async (req, res) => {
   const { url } = req.body;
-  if (!url || !isValidUrl(url)) {
-    return res.status(400).json({
-      status: "error",
-      message: "Please enter a valid website URL.",
-    });
+  if (!isValidUrl(url)) {
+    return res.status(400).json({ message: "Invalid URL" });
   }
 
-  const dir = path.join(process.cwd(), "screenshots");
-  ensureDir(dir);
-
+  ensureDir("screenshots");
   const id = crypto.randomUUID();
+
   const desktopFile = `desktop-${id}.webp`;
   const mobileFile = `mobile-${id}.webp`;
 
-  const warnings = [];
   let browser;
 
   try {
     browser = await puppeteer.launch({
       headless: "new",
-      protocolTimeout: 120000,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
 
-    /* ---------- DESKTOP ---------- */
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await sleep(3000);
 
-    const desktop = await browser.newPage();
-    await hardenPage(desktop);
-    await desktop.setViewport({ width: 1440, height: 900 });
+    const websiteName = await page.title();
+    const category = await extractCategory(page);
 
-    await desktop.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await stabilizePage(desktop);
-    await forceLoadImages(desktop);
-    await aggressiveScroll(desktop);
-
-    try {
-      await desktop.screenshot({
-        path: path.join(dir, desktopFile),
-        type: "webp",
-        quality: 90,
-        fullPage: true,
+    const colors = await page.evaluate(() => {
+      const set = new Set();
+      document.querySelectorAll("*").forEach((el) => {
+        const s = getComputedStyle(el);
+        if (s.color) set.add(s.color);
+        if (s.backgroundColor) set.add(s.backgroundColor);
       });
-    } catch {
-      warnings.push("Desktop screenshot was partially captured.");
-    }
-
-    const category = await extractCategory(desktop);
-
-    const rawColors = await extractCSSColors(desktop);
-
-    const colors = rawColors.map(rgbToHex).filter(Boolean).slice(0, 30);
-
-    // const colors = await extractCSSColors(desktop);
-    const fonts = await extractFonts(desktop);
-    const fontTypes = classifyFontTypes(fonts);
-    const tags = await extractTags(desktop);
-
-    await desktop.close();
-
-    /* ---------- MOBILE ---------- */
-
-    const mobile = await browser.newPage();
-    await hardenPage(mobile);
-    await mobile.setViewport({
-      width: 450,
-      height: 844,
-      // isMobile: true,
-      deviceScaleFactor: 1,
+      return [...set]
+        .filter((c) => c.startsWith("rgb"))
+        .slice(0, 20)
+        .map((c) => {
+          const m = c.match(/\d+/g);
+          return (
+            "#" + m.map((x) => Number(x).toString(16).padStart(2, "0")).join("")
+          );
+        });
     });
 
-    await mobile.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await stabilizePage(mobile);
-
-    try {
-      await mobile.screenshot({
-        path: path.join(dir, mobileFile),
-        type: "webp",
-        quality: 90,
-        fullPage: true,
+    const fonts = await page.evaluate(() => {
+      const set = new Set();
+      document.querySelectorAll("*").forEach((el) => {
+        getComputedStyle(el)
+          .fontFamily.split(",")
+          .forEach((f) => set.add(f.replace(/["']/g, "").trim()));
       });
-    } catch {
-      warnings.push("Mobile screenshot could not be fully generated.");
-    }
+      return [...set].slice(0, 8);
+    });
 
-    await mobile.close();
+    const tags = await page.evaluate(() => {
+      const set = new Set();
+      document.querySelectorAll("h1,h2").forEach((h) => {
+        if (h.innerText.length < 50) set.add(h.innerText.toLowerCase());
+      });
+      return [...set].slice(0, 10);
+    });
+
+    await page.screenshot({
+      path: `screenshots/${desktopFile}`,
+      type: "webp",
+      fullPage: true,
+    });
+
+    await page.setViewport({ width: 450, height: 844 });
+    await page.screenshot({
+      path: `screenshots/${mobileFile}`,
+      type: "webp",
+      fullPage: true,
+    });
+
+    await page.close();
 
     res.json({
-      status: warnings.length ? "partial_success" : "success",
-      message: warnings.length
-        ? "Some data could not be fully extracted, but screenshots were captured."
-        : "Website analyzed successfully.",
+      websiteName,
       category,
       colors,
       fonts,
-      fontTypes,
       tags,
       desktop: desktopFile,
       mobile: mobileFile,
-      warnings,
     });
-  } catch (err) {
-    res.status(500).json({
-      status: "error",
-      message: "The website restricted automation or took too long to respond.",
-    });
+  } catch (e) {
+    res.status(500).json({ message: "Website analysis failed" });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-/* ---------------- SERVER ---------------- */
+/* ---------------- SUBMIT ---------------- */
+
+app.post("/submit", (req, res) => {
+  const data = req.body;
+
+  if (!data.url || !data.websiteName) {
+    return res.status(400).json({ message: "Invalid submission" });
+  }
+
+  // Replace with DB later
+  fs.appendFileSync("submissions.json", JSON.stringify(data, null, 2) + ",\n");
+
+  res.json({ message: "Website submitted successfully" });
+});
+
+/* ---------------- START ---------------- */
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
+  console.log(`🚀 Backend running on port ${PORT}`);
 });
